@@ -17,4 +17,22 @@ pub mod helper {
         // all good
         return true;
     }
+
+    pub fn pad_start(s: &str, width: usize, pad: char) -> String {
+        let len = s.chars().count();
+        if width > len {
+            (0..width - len).map(|_| pad).collect::<String>() + s
+        } else {
+            s.to_string()
+        }
+    }
+
+    pub fn pad_end(s: &str, width: usize, pad: char) -> String {
+        let len = s.chars().count();
+        if width > len {
+            s.to_string() + &(0..width - len).map(|_| pad).collect::<String>()
+        } else {
+            s.to_string()
+        }
+    }
 }
