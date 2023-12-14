@@ -166,8 +166,10 @@ fn scan_dir(path: &str) -> Result<(), Error> {
         if file_type.is_dir() && !full_path.contains("node_modules") {
             let _ = scan_dir(full_path);
         } else if file_type.is_file() && full_path.ends_with(".zip") {
-            let map = unzip(full_path);
-            println!("\nunzip Result: {:?}\n", map);
+            match unzip(full_path) {
+                Ok(map) => println!("\nunzip Result: {:?}\n", map),
+                Err(e) => println!("{}", e.to_string()),
+            }
         }
     }
 
