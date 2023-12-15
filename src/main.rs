@@ -3,8 +3,9 @@ use comic_rezip::constant::{OUT_PATH, TRANSFORM_EXT, TRASH_EXT};
 use comic_rezip::{helper, CustomError, MyError};
 use image_convert::{to_jpg, ImageResource, JPGConfig};
 use rayon::prelude::*;
+use std::fs::FileType;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{collections::HashMap, env};
 use tokio::fs::{self, File};
 use walkdir::{DirEntry, WalkDir};
@@ -85,16 +86,29 @@ async fn unzip(path: &str) -> Result<(HashMap<String, u32>, String, String), MyE
     Ok((ret, temp_path_str, dest_file))
 }
 
+struct MyTest {
+    pub path: PathBuf,
+    pub file_type: FileType,
+}
+
+impl MyTest {
+    fn new(path: PathBuf, file_type: FileType) -> MyTest {
+        return MyTest { path, file_type };
+    }
+}
+
 // scan_dir eat all errors
 // let it panic
 async fn scan_dir(path: &str) {
     // println!("goto path: {:?}", path);
 
-    for (path, file_type) in WalkDir::new(path)
+    for my_test in WalkDir::new(path)
         .into_iter()
         .filter_map(|e| e.ok())
-        .map(|e| (Path::new(path).join(e.file_name()), e.file_type()))
+        .map(|e| MyTest::new(Path::new(path).join(e.file_name()), e.file_type()))
     {
+        let path = my_test.path;
+        let file_type = my_test.file_type;
         if let Some(full_path) = path.to_str() {
             let full_path = full_path.to_string();
 
