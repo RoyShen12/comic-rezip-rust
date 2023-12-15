@@ -10,8 +10,10 @@ chalk_rs = "1.0.1"
 chardet = "0.2.4"
 dirs-next = "2.0.0"
 encoding = "0.2.33"
+image-convert = "0.16.1"
 mime_guess = "2.0.4"
+rayon = "1.8.0"
 tempfile = "3"
-tokio = { version = "1.35.0", features = ["fs", "rt"] }
+tokio = { version = "1.35.0", features = ["full"] }
 walkdir = "2.4.0"
 zip = "0.6.6"

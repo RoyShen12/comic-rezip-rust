@@ -102,7 +102,11 @@ pub mod helper {
             .unwrap_or(&filename).to_owned()
     }
 
-    pub fn zip_dir(src_dir: &str, dst_file: &str) -> Result<(), MyError> {
+    pub fn zip_dir(
+        src_dir: &str,
+        dst_file: &str,
+        filter: Option<Box<dyn FnMut(&DirEntry) -> bool>>,
+    ) -> Result<(), MyError> {
         if !Path::new(src_dir).is_dir() {
             return Err(MyError::Zip(ZipError::FileNotFound));
         }
@@ -128,9 +132,14 @@ pub mod helper {
         let file = File::create(Path::new(dst_file))?;
 
         let walkdir = WalkDir::new(src_dir);
-        let it = walkdir.into_iter();
 
-        zip_dir_inner(&mut it.filter_map(|e| e.ok()), src_dir, file, METHOD_STORED)?;
+        let it = walkdir.into_iter().filter_map(|e| e.ok());
+        let mut it = it.filter(if let Some(filter) = filter {
+            filter
+        } else {
+            Box::new(|_: &DirEntry| true)
+        });
+        zip_dir_inner(&mut it, src_dir, file, METHOD_STORED)?;
 
         Ok(())
     }
@@ -175,7 +184,7 @@ pub mod helper {
             }
         }
         zip.finish()?;
-        Result::Ok(())
+        Ok(())
     }
 
     pub fn pad_start(s: &str, width: usize, pad: char) -> String {
@@ -196,6 +205,8 @@ pub mod helper {
         }
     }
 }
+
+pub mod constant;
 
 mod my_error;
 pub use my_error::{CustomError, MyError};
