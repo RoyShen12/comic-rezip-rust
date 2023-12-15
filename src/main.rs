@@ -1,222 +1,153 @@
-use comic_rezip::helper;
-use encoding::{label::encoding_from_whatwg_label, DecoderTrap};
+use chalk_rs::Chalk;
+use comic_rezip::{helper, CustomError, MyError};
+use std::fs::{self, File};
+use std::io;
 use std::path::Path;
 use std::{collections::HashMap, env};
-// use std::sync::Arc;
-use chalk_rs::Chalk;
-use std::fs::{self, File};
-use std::io::{Error, ErrorKind};
+use walkdir::WalkDir;
 use zip::ZipArchive;
 
-// async fn print_dir<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
-//     let mut entries = fs::read_dir(path).await?;
+const OUT_PATH: &str = "Downloads/test-out";
 
-//     while let Some(entry) = entries.next_entry().await? {
-//         println!("{}", entry.file_name().to_string_lossy());
-//     }
-
-//     Ok(())
-// }
-
-// struct User {
-//     active: bool,
-//     username: String,
-//     email: Option<String>,
-//     sign_in_count: u64,
-// }
-
-fn unzip(path: &str) -> Result<HashMap<String, u32>, Error> {
-    let meta = fs::metadata(path).ok().ok_or_else(|| {
-        Error::new(
-            ErrorKind::Other,
-            Chalk::new()
-                .light_red()
-                .string(&format!("cannot get file meta of {} !", path)),
-        )
-    })?;
-
-    println!(
-        "check file: ({:.1} MB) {:?}",
-        meta.len() as f64 / 1024.0 / 1024.0,
-        path,
-    );
-
+fn unzip(path: &str) -> Result<(HashMap<String, u32>, String, String), MyError> {
     let mut ret: HashMap<String, u32> = HashMap::new();
 
     let reader = File::open(path)?;
     let mut zip = ZipArchive::new(reader)?;
 
+    let tmp_dir = tempfile::tempdir()?;
+    println!("make tmp_dir {:?}", tmp_dir.path());
+
     let zip_len = zip.len();
     for i in 0..zip_len {
-        let file = zip.by_index(i)?;
+        let mut file = zip.by_index(i)?;
         let entry_name = file.name_raw();
-        let (encode, confidence, _) = chardet::detect(entry_name);
 
-        let coder =
-            encoding_from_whatwg_label(chardet::charset2encoding(&encode)).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Other,
-                    Chalk::new()
-                        .light_red()
-                        .string(&"encoding_from_whatwg_label failed"),
-                )
-            })?;
-        let decoded_entry_name = coder
-            .decode(&entry_name, DecoderTrap::Ignore)
-            .ok()
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Other,
-                    Chalk::new().light_red().string(&"decode failed"),
-                )
-            })?;
+        // let extra_data = encoding::label::encoding_from_whatwg_label("UTF-8")
+        //     .unwrap()
+        //     .decode(&file.extra_data(), encoding::DecoderTrap::Ignore)
+        //     .unwrap();
+        // println!("extra data: {extra_data}");
 
-        if !helper::validate_file_name(decoded_entry_name.as_str()) {
-            return Err(Error::new(
-                ErrorKind::Other,
-                Chalk::new().light_red().string(&"Invalid file name"),
-            ));
-        }
+        let decoded_entry_name = helper::decode_zip_filename(entry_name)?;
 
-        let is_dir = file.is_dir();
+        helper::validate_file_name(decoded_entry_name.as_str())?;
 
-        if encode != "ascii" && encode != "utf-8" {
-            println!(
-                "entry<{}/{}> [{}] encode: {}, confidence: {}, raw: {}, decoded: {}",
-                i,
-                zip_len,
-                if is_dir {
-                    Chalk::new().green().string(&"D")
-                } else {
-                    Chalk::new().yellow().string(&"F")
-                },
-                encode,
-                confidence,
-                Chalk::new()
-                    .yellow()
-                    .string(&String::from_utf8_lossy(entry_name)),
-                Chalk::new().green().string(&decoded_entry_name.clone())
-            );
-        }
+        let out_path = tmp_dir.path().join(&decoded_entry_name);
 
-        if !is_dir {
-            let ext = Path::new(&decoded_entry_name)
-                .extension()
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Other,
-                        Chalk::new().light_red().string(&format!(
-                            "get path \"{}\" extension failed",
-                            decoded_entry_name
-                        )),
-                    )
-                })?
-                .to_str()
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Other,
-                        Chalk::new()
-                            .light_red()
-                            .string(&format!("ext to str (path:{}) failed", decoded_entry_name)),
-                    )
-                })?;
-            *ret.entry(ext.to_string()).or_insert(0) += 1u32
+        println!("out_path: {:?}", out_path);
+
+        if !file.is_dir() {
+            // statistic file ext name
+            *ret.entry(helper::get_file_ext_or_itself(&decoded_entry_name).to_string())
+                .or_insert(0) += 1u32;
+
+            // ensure path exist
+            let out_path_parent = Path::new(&out_path).parent();
+            println!("out_path_parent: {:?}", out_path_parent);
+            if out_path_parent.is_some() && !out_path_parent.unwrap().exists() {
+                println!("mkdir -p {:?}", out_path_parent);
+                fs::create_dir_all(out_path_parent.unwrap())?;
+            }
+
+            // create file fd
+            println!("create file fd: {:?}", out_path);
+            let mut out_file = File::create(&out_path)?;
+
+            // unzip file
+            io::copy(&mut file, &mut out_file)?;
+        } else {
+            // mkdir dir from zip
+            println!("mkdir -p {:?}", out_path);
+            fs::create_dir_all(out_path)?;
         }
     }
-    Ok(ret)
+
+    let dest_file = dirs_next::home_dir()
+        .ok_or(MyError::Custom(CustomError::new("cannot get home_dir")))?
+        .join(Path::new(OUT_PATH))
+        .join(
+            Path::new(&path)
+                .file_name()
+                .ok_or(MyError::Custom(CustomError::new(&format!(
+                    "cannot get file_name from {path}"
+                ))))?,
+        )
+        .to_string_lossy()
+        .into_owned();
+    let temp_path_str = tmp_dir
+        .into_path()
+        .as_os_str()
+        .to_string_lossy()
+        .into_owned();
+
+    Ok((ret, temp_path_str, dest_file))
 }
 
-fn scan_dir(path: &str) -> Result<(), Error> {
-    println!("goto path: {:?}", path);
+// scan_dir eat all errors
+// let it panic
+fn scan_dir(path: &str) {
+    // println!("goto path: {:?}", path);
+    for entry in WalkDir::new(path) {
+        if let Some(ok_entry) = entry.as_ref().ok() {
+            let path = Path::new(path).join(ok_entry.file_name());
+            if let Some(full_path) = path.to_str() {
+                let file_type = ok_entry.file_type();
 
-    let dir = fs::read_dir(path).ok().ok_or_else(|| {
-        Error::new(
-            ErrorKind::Other,
-            Chalk::new().light_red().string(&"fs::read_dir failed"),
-        )
-    })?;
+                if file_type.is_file() && full_path.ends_with(".zip") {
+                    match unzip(full_path) {
+                        Ok((map, temp_path_str, dest_file)) => {
+                            println!("unzip {} Result", Chalk::new().bold().string(&full_path));
+                            for (k, v) in &map {
+                                println!(
+                                    "{k}->{}->{v}",
+                                    mime_guess::from_ext(k.as_str())
+                                        .first_or_octet_stream()
+                                        .to_string()
+                                )
+                            }
 
-    for entry in dir {
-        let ok_entry = entry.ok().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Other,
-                Chalk::new().light_red().string(&"get entry failed"),
-            )
-        })?;
+                            match helper::zip_dir(&temp_path_str, &dest_file) {
+                                Ok(()) => {}
+                                Err(e) => eprintln!("{e}"),
+                            }
 
-        let path = Path::new(path).join(ok_entry.file_name());
-        let full_path = path.to_str().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Other,
-                Chalk::new()
-                    .light_red()
-                    .string(&format!("path {:?} to string failed", path)),
-            )
-        })?;
-
-        let file_type = ok_entry.file_type().ok().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Other,
-                Chalk::new()
-                    .light_red()
-                    .string(&"get entry file_type failed"),
-            )
-        })?;
-
-        if file_type.is_dir() && !full_path.contains("node_modules") {
-            let _ = scan_dir(full_path);
-        } else if file_type.is_file() && full_path.ends_with(".zip") {
-            match unzip(full_path) {
-                Ok(map) => println!("\nunzip Result: {:?}\n", map),
-                Err(e) => println!("{}", e.to_string()),
+                            // clean temp dir
+                            match fs::remove_dir_all(&temp_path_str) {
+                                Ok(()) => println!("clean tmp dir ok"),
+                                Err(e) => eprintln!("{e}"),
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "unzip {} failed: {:?}",
+                                Chalk::new().bold().string(&full_path),
+                                e
+                            )
+                        }
+                    }
+                }
+            } else {
+                eprintln!(
+                    "{}",
+                    Chalk::new()
+                        .light_red()
+                        .string(&format!("path {path:?} to string failed"))
+                )
             }
+        } else {
+            eprintln!(
+                "{}",
+                Chalk::new()
+                    .light_red()
+                    .string(&format!("cannot walk into entry {:?}", entry))
+            );
         }
     }
-
-    Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    println!("{:?}", args);
+    // println!("{args:?}");
     let _ = scan_dir(&args[1]);
-
-    // let user = User {
-    //     email: Some(String::from("someone@example.com")),
-    //     username: String::from("someusername123"),
-    //     active: true,
-    //     sign_in_count: 1,
-    // };
-    // let yes = if user.email.is_some() { "1" } else { "2" };
-    // let rt = Runtime::new().unwrap();
-    // rt.block_on(print_dir("/Users/royshen/WorkRepo"));
-
-    // let reader = File::open("/Users/royshen/Downloads/test/test.zip");
-    // let reader = match reader {
-    //     Ok(file) => file,
-    //     Err(error) => {
-    //         panic!("Problem opening the file: {:?}", error)
-    //     }
-    // };
-
-    // let mut zip = ZipArchive::new(reader).unwrap();
-
-    // for i in 0..zip.len() {
-    //     let file = zip.by_index(i).unwrap();
-    //     let file_name = file.name().as_bytes();
-
-    //     let det = detect(file_name); // 使用chardet获取编码和置信度
-    //     let encoding_label = &det.0;
-
-    //     // 使用encoding_rs的for_label函数获取编码
-    //     let encoding = Encoding::for_label(encoding_label.as_bytes()).unwrap_or(UTF_8); // 使用UTF_8作为备用方案
-    //     println!("encoding.name: {}", encoding.name());
-    //     let (decoded, _, had_errors) = encoding.decode(file_name);
-
-    //     if had_errors {
-    //         println!("解码错误!");
-    //     } else {
-    //         println!("文件名：{}", decoded);
-    //     }
-    // }
 }
