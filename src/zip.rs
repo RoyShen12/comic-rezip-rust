@@ -88,29 +88,33 @@ where
     let mut buffer = Vec::new();
 
     for entry in it {
-        let path = entry.path();
-        let name = path.strip_prefix(Path::new(prefix)).unwrap();
+        tokio::spawn(async {
+            let path = entry.path();
+            let name = path.strip_prefix(Path::new(prefix)).unwrap();
 
-        // Write file or directory explicitly
-        // Some unzip tools unzip files with directory paths correctly, some do not!
-        if path.is_file() {
-            // println!("adding file {path:?} as {name:?} ...");
+            // Write file or directory explicitly
+            // Some unzip tools unzip files with directory paths correctly, some do not!
+            if path.is_file() {
+                // println!("adding file {path:?} as {name:?} ...");
 
-            zip.start_file(name.as_os_str().to_string_lossy(), options)?;
-            let mut f = std::fs::File::open(path)?;
+                zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+                let mut f = std::fs::File::open(path)?;
 
-            f.read_to_end(&mut buffer)?;
-            zip.write_all(&buffer)?;
-            buffer.clear();
-        } else if !name.as_os_str().is_empty() {
-            // Only if not root! Avoids path spec / warning
-            // and mapname conversion failed error on unzip
-            // println!("adding dir {path:?} as {name:?} ...");
+                f.read_to_end(&mut buffer)?;
+                zip.write_all(&buffer)?;
+                buffer.clear();
+            } else if !name.as_os_str().is_empty() {
+                // Only if not root! Avoids path spec / warning
+                // and mapname conversion failed error on unzip
+                // println!("adding dir {path:?} as {name:?} ...");
 
-            zip.start_file(name.as_os_str().to_string_lossy(), options)?;
-        }
+                zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+            }
+        });
     }
+
     zip.finish()?;
+
     Ok(())
 }
 
