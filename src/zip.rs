@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::io::{self, Read};
-use std::io::{Seek, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 use tokio::fs::{self, File};
 use walkdir::{DirEntry, WalkDir};
@@ -76,7 +75,7 @@ fn zip_dir_inner<T>(
     prefix: &str,
     writer: T,
     method: zip::CompressionMethod,
-) -> zip::result::ZipResult<()>
+) -> Result<(), MyError>
 where
     T: Write + Seek,
 {
@@ -85,32 +84,30 @@ where
         .compression_method(method)
         .unix_permissions(0o644);
 
-    let mut buffer = Vec::new();
-
     for entry in it {
-        tokio::spawn(async {
-            let path = entry.path();
-            let name = path.strip_prefix(Path::new(prefix)).unwrap();
+        let path = entry.path();
+        let name = path
+            .strip_prefix(Path::new(prefix))
+            .ok()
+            .ok_or(CustomError::new(&format!(
+                "strip_prefix path {prefix} failed"
+            )))?;
 
-            // Write file or directory explicitly
-            // Some unzip tools unzip files with directory paths correctly, some do not!
-            if path.is_file() {
-                // println!("adding file {path:?} as {name:?} ...");
+        // Write file or directory explicitly
+        // Some unzip tools unzip files with directory paths correctly, some do not!
+        if path.is_file() {
+            zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+            let mut f = std::fs::File::open(path)?;
 
-                zip.start_file(name.as_os_str().to_string_lossy(), options)?;
-                let mut f = std::fs::File::open(path)?;
-
-                f.read_to_end(&mut buffer)?;
-                zip.write_all(&buffer)?;
-                buffer.clear();
-            } else if !name.as_os_str().is_empty() {
-                // Only if not root! Avoids path spec / warning
-                // and mapname conversion failed error on unzip
-                // println!("adding dir {path:?} as {name:?} ...");
-
-                zip.start_file(name.as_os_str().to_string_lossy(), options)?;
-            }
-        });
+            let mut buffer = Vec::new();
+            f.read_to_end(&mut buffer)?;
+            zip.write_all(&buffer)?;
+            buffer.clear();
+        } else if !name.as_os_str().is_empty() {
+            // Only if not root! Avoids path spec / warning
+            // and map name conversion failed error on unzip
+            zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+        }
     }
 
     zip.finish()?;
@@ -156,6 +153,7 @@ async fn unzip_inner(reader: File, out_dir: &Path) -> Result<HashMap<String, u32
 
             // create file fd
             println!("create file fd: {:?}", out_path);
+
             let mut out_file = std::fs::File::create(&out_path)?;
 
             io::copy(&mut file, &mut out_file)?;
