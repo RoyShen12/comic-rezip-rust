@@ -56,6 +56,7 @@ pub enum MyError {
     Io(std::io::Error),
     Parse(std::num::ParseIntError),
     Zip(ZipError),
+    AsyncZip(async_zip::error::ZipError),
     Custom(CustomError),
 }
 
@@ -65,6 +66,7 @@ impl fmt::Display for MyError {
             MyError::Io(ref err) => write!(f, "IO error: {err}"),
             MyError::Parse(ref err) => write!(f, "Parse error: {err}"),
             MyError::Zip(ref err) => write!(f, "Zip Lib error: {err}"),
+            MyError::AsyncZip(ref err) => write!(f, "Async Zip Lib error: {err}"),
             MyError::Custom(ref err) => write!(f, "custom error: {err}",),
         }
     }
@@ -76,6 +78,7 @@ impl std::error::Error for MyError {
             MyError::Io(ref err) => Some(err),
             MyError::Parse(ref err) => Some(err),
             MyError::Zip(ref err) => Some(err),
+            MyError::AsyncZip(ref err) => Some(err),
             MyError::Custom(ref err) => Some(err),
         }
     }
@@ -94,6 +97,11 @@ impl From<std::num::ParseIntError> for MyError {
 impl From<ZipError> for MyError {
     fn from(err: ZipError) -> MyError {
         MyError::Zip(err)
+    }
+}
+impl From<async_zip::error::ZipError> for MyError {
+    fn from(err: async_zip::error::ZipError) -> MyError {
+        MyError::AsyncZip(err)
     }
 }
 impl From<CustomError> for MyError {

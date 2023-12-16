@@ -278,10 +278,12 @@ dependencies = [
  "chardet",
  "dirs-next",
  "encoding",
+ "futures-util",
  "image-convert",
  "mime_guess",
  "tempfile",
  "tokio",
+ "tokio-util",
  "walkdir",
  "zip",
 ]

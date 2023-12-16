@@ -1,6 +1,6 @@
 use chalk_rs::Chalk;
 use comic_rezip::constant::{TRANSFORM_EXT, TRASH_EXT};
-use comic_rezip::helper;
+use comic_rezip::zip;
 use image_convert::{to_jpg, ImageResource, JPGConfig};
 use std::env;
 use std::io::ErrorKind;
@@ -11,7 +11,7 @@ use walkdir::{DirEntry, WalkDir};
 async fn process_zip_file(full_path: String) {
     println!("[async process_zip_file] get file: {}", full_path);
 
-    match helper::unzip(full_path.clone()).await {
+    match zip::unzip(full_path.clone()).await {
         Ok((map, temp_path_str, dest_file)) => {
             println!("unzip {} Result", Chalk::new().bold().string(&full_path));
 
@@ -87,7 +87,7 @@ async fn process_zip_file(full_path: String) {
             }
 
             // rezip dir
-            match helper::zip_dir(
+            match zip::zip_dir(
                 &temp_path_str,
                 &dest_file,
                 Some(Box::new(|fd_entry: &DirEntry| -> bool {
