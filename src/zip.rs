@@ -54,7 +54,7 @@ pub async fn zip_dir(
 }
 
 pub async fn unzip(path: String) -> Result<(HashMap<String, u32>, String, String), MyError> {
-    let reader = File::open(&path).await?;
+    let reader = std::fs::File::open(&path)?;
 
     let tmp_dir = tempfile::tempdir()?;
     println!("make tmp_dir {:?}", tmp_dir.path());
@@ -115,9 +115,12 @@ where
     Ok(())
 }
 
-async fn unzip_inner(reader: File, out_dir: &Path) -> Result<HashMap<String, u32>, MyError> {
+async fn unzip_inner(
+    reader: std::fs::File,
+    out_dir: &Path,
+) -> Result<HashMap<String, u32>, MyError> {
     let mut ret: HashMap<String, u32> = HashMap::new();
-    let mut zip = ZipArchive::new(reader.into_std().await)?;
+    let mut zip = ZipArchive::new(reader)?;
     let zip_len = zip.len();
 
     for i in 0..zip_len {
