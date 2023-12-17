@@ -9,11 +9,14 @@ use tokio::fs::{self};
 use walkdir::{DirEntry, WalkDir};
 
 async fn process_zip_file(full_path: String) {
-    println!("[async process_zip_file] get file: {}", full_path);
+    println!("[async process_zip_file]({full_path}) entered");
 
     match zip::unzip(full_path.clone()).await {
         Ok((map, temp_path_str, dest_file)) => {
-            println!("unzip {} Result", Chalk::new().bold().string(&full_path));
+            println!(
+                "[async process_zip_file]({full_path}) unzip {} Result",
+                Chalk::new().bold().string(&full_path)
+            );
 
             for (k, v) in &map {
                 println!(
@@ -52,7 +55,7 @@ async fn process_zip_file(full_path: String) {
                                 config.quality = 86;
                                 let input = ImageResource::from_path(fd_path.to_path_buf());
                                 let mut output = ImageResource::from_path(&target_path);
-                                println!("convert {:?} to {:?}", fd_path, target_path);
+                                println!("[async process_zip_file] [async thread task] convert {:?} to {:?}", fd_path, target_path);
                                 match to_jpg(&mut output, &input, &config) {
                                     Ok(_) => {
                                         // remove origin pic
@@ -79,6 +82,7 @@ async fn process_zip_file(full_path: String) {
                     }
                 }
             }
+
             for handle in handles {
                 match handle.await {
                     Ok(_) => {}
@@ -134,34 +138,40 @@ async fn process_zip_file(full_path: String) {
 
 // scan_dir eat all errors
 // let it panic
-async fn scan_dir(path: &str) {
-    println!("[async scan_dir] goto path: {}", path);
+fn scan_dir(path: &str) {
+    if let Ok(rt) = tokio::runtime::Runtime::new() {
+        let local_tasks = tokio::task::LocalSet::new();
 
-    for (path, file_type) in WalkDir::new(path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .map(|e| (Path::new(path).join(e.file_name()), e.file_type()))
-    {
-        if let Some(full_path) = path.to_str() {
-            let full_path = full_path.to_string();
+        for (path, file_type) in WalkDir::new(path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .map(|e| (Path::new(path).join(e.file_name()), e.file_type()))
+        {
+            if let Some(full_path) = path.to_str() {
+                let full_path = full_path.to_string();
 
-            if file_type.is_file() && full_path.ends_with(".zip") {
-                process_zip_file(full_path).await;
+                if file_type.is_file() && full_path.ends_with(".zip") {
+                    local_tasks.spawn_local(process_zip_file(full_path));
+                }
+            } else {
+                eprintln!(
+                    "{}",
+                    Chalk::new()
+                        .light_red()
+                        .string(&format!("path {path:?} to string failed"))
+                )
             }
-        } else {
-            eprintln!(
-                "{}",
-                Chalk::new()
-                    .light_red()
-                    .string(&format!("path {path:?} to string failed"))
-            )
         }
+
+        rt.block_on(async {
+            // 开始执行本地任务队列中的所有异步任务，并等待它们全部完成
+            local_tasks.await;
+        });
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<String> = env::args().collect();
     // println!("{args:?}");
-    let _ = scan_dir(&args[1]).await;
+    let _ = scan_dir(&args[1]);
 }

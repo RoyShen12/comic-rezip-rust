@@ -124,6 +124,7 @@ async fn unzip_inner(
     let zip_len = zip.len();
 
     for i in 0..zip_len {
+        let time_other = std::time::Instant::now();
         let mut file = zip.by_index(i)?;
         let entry_name = file.name_raw();
 
@@ -138,7 +139,7 @@ async fn unzip_inner(
         helper::validate_file_name(decoded_entry_name.as_str())?;
 
         let out_path = out_dir.join(&decoded_entry_name);
-        println!("unzip out_path: {:?}", out_path);
+        // println!("[unzip_inner] unzip out_path: {:?}", out_path);
 
         // is not dir
         if !decoded_entry_name.ends_with('/') {
@@ -147,22 +148,34 @@ async fn unzip_inner(
                 .or_insert(0) += 1u32;
 
             // ensure path exist
-            let out_path_parent = Path::new(&out_path).parent();
-            println!("out_path_parent: {:?}", out_path_parent);
-            if out_path_parent.is_some() && !out_path_parent.unwrap().exists() {
-                println!("mkdir -p {:?}", out_path_parent);
-                fs::create_dir_all(out_path_parent.unwrap()).await?;
+            let out_path_parent =
+                Path::new(&out_path)
+                    .parent()
+                    .ok_or(CustomError::new(&format!(
+                        "cannot get parent of path {:?}",
+                        &out_path
+                    )))?;
+            // println!("[unzip_inner] out_path_parent: {:?}", out_path_parent);
+            if !out_path_parent.exists() {
+                println!("[unzip_inner] mkdir -p {:?}", out_path_parent);
+                fs::create_dir_all(out_path_parent).await?;
             }
 
             // create file fd
-            println!("create file fd: {:?}", out_path);
-
             let mut out_file = std::fs::File::create(&out_path)?;
-
+            let time_other = time_other.elapsed().as_micros();
+            let time = std::time::Instant::now();
             io::copy(&mut file, &mut out_file)?;
+            println!(
+                "[unzip_inner] copy {:?} -> {:?} ({:.2} ms unzip & I/O, {:.2} μs other)",
+                decoded_entry_name,
+                out_path,
+                time.elapsed().as_millis(),
+                time_other
+            );
         } else {
             // mkdir dir from zip
-            println!("mkdir -p {:?}", out_path);
+            println!("[unzip_inner] mkdir -p {:?}", out_path);
             fs::create_dir_all(out_path).await?;
         }
     }
