@@ -2,7 +2,9 @@ use async_zip::Compression;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, Write};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::fs::{self, File};
+use tokio::sync::Mutex;
 use walkdir::{DirEntry, WalkDir};
 use zip::result::ZipError;
 use zip::write::FileOptions;
@@ -231,56 +233,114 @@ async fn unzip_inner_async(archive: File, out_dir: &Path) -> Result<HashMap<Stri
     use tokio::fs::OpenOptions;
     use tokio_util::compat::TokioAsyncWriteCompatExt;
 
-    let mut ret: HashMap<String, u32> = HashMap::new();
-
+    let ret: HashMap<String, u32> = HashMap::new();
     // let archive = archive.compat();
-    let mut zip = ZipFileReader::with_tokio(archive).await?;
+    let zip = ZipFileReader::with_tokio(archive).await?;
 
-    for index in 0..zip.file().entries().len() {
-        tokio::spawn(async {});
-        let entry = zip
-            .file()
-            .entries()
-            .get(index)
-            .ok_or(MyError::Custom(CustomError::new(&format!(
-                "async zip get index {index} failed"
-            ))))?;
+    let zip_arc = Arc::new(Mutex::new(zip));
+    let ret_arc = Arc::new(Mutex::new(ret));
 
-        let filename = entry.entry().filename().as_bytes();
-        let decoded_entry_name = helper::decode_zip_filename(filename)?;
+    let mut handles = vec![];
 
-        helper::validate_file_name(&decoded_entry_name)?;
-        let path = out_dir.join(&decoded_entry_name);
+    for index in 0..zip_arc.lock().await.file().entries().len() {
+        let out_dir = out_dir.to_owned();
 
-        let mut entry_reader = zip.reader_with_entry(index).await?;
+        let zip_arc = Arc::clone(&zip_arc); // 克隆
+        let ret_arc = Arc::clone(&ret_arc); // 克隆
 
-        if decoded_entry_name.ends_with('/') {
-            // The directory may have been created if iteration is out of order.
-            if !path.exists() {
-                fs::create_dir_all(&path).await?;
+        handles.push(tokio::spawn(async move {
+            let mut locked_zip_arc = zip_arc.lock().await;
+
+            match locked_zip_arc
+                .file()
+                .entries()
+                .get(index)
+                .ok_or(MyError::Custom(CustomError::new(&format!(
+                    "async zip get index {index} failed"
+                )))) {
+                Ok(entry) => {
+                    let filename = entry.entry().filename().as_bytes();
+                    if let Ok(decoded_entry_name) = helper::decode_zip_filename(filename) {
+                        match helper::validate_file_name(&decoded_entry_name) {
+                            Ok(_) => {
+                                let path = out_dir.join(&decoded_entry_name);
+
+                                match locked_zip_arc.reader_with_entry(index).await {
+                                    Ok(mut entry_reader) => {
+                                        if decoded_entry_name.ends_with('/') {
+                                            // The directory may have been created if iteration is out of order.
+                                            if !path.exists() {
+                                                match fs::create_dir_all(&path).await {
+                                                    Err(e) => eprint!("{:?}", e),
+                                                    _ => {}
+                                                }
+                                            }
+                                        } else {
+                                            // statistic file ext name
+                                            let name_clone = String::from(&decoded_entry_name);
+                                            *ret_arc
+                                                .lock()
+                                                .await
+                                                .entry(
+                                                    helper::get_file_ext_or_itself(&name_clone)
+                                                        .to_string(),
+                                                )
+                                                .or_insert(0) += 1u32;
+
+                                            // Creates parent directories. They may not exist if iteration is out of order
+                                            // or the archive does not contain directory entries.
+                                            let parent = path.parent().expect(
+                                                "A file entry should have parent directories",
+                                            );
+                                            if !parent.is_dir() {
+                                                match fs::create_dir_all(parent).await {
+                                                    Err(e) => eprint!("{:?}", e),
+                                                    _ => {}
+                                                }
+                                            }
+                                            match OpenOptions::new()
+                                                .write(true)
+                                                .create_new(true)
+                                                .open(&path)
+                                                .await
+                                            {
+                                                Ok(writer) => {
+                                                    match futures_util::io::copy(
+                                                        &mut entry_reader,
+                                                        &mut writer.compat_write(),
+                                                    )
+                                                    .await
+                                                    {
+                                                        Err(e) => eprint!("{:?}", e),
+                                                        _ => {}
+                                                    }
+                                                }
+                                                Err(e) => eprint!("{:?}", e),
+                                            }
+                                        }
+                                    }
+                                    Err(e) => eprint!("{:?}", e),
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(e) => eprint!("{:?}", e),
             }
-        } else {
-            // statistic file ext name
-            let name_clone = String::from(&decoded_entry_name);
-            *ret.entry(helper::get_file_ext_or_itself(&name_clone).to_string())
-                .or_insert(0) += 1u32;
+        }));
+    }
 
-            // Creates parent directories. They may not exist if iteration is out of order
-            // or the archive does not contain directory entries.
-            let parent = path
-                .parent()
-                .expect("A file entry should have parent directories");
-            if !parent.is_dir() {
-                fs::create_dir_all(parent).await?;
-            }
-            let writer = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .await?;
-            futures_util::io::copy(&mut entry_reader, &mut writer.compat_write()).await?;
+    for handle in handles {
+        match handle.await {
+            Ok(_) => {}
+            Err(e) => eprint!("{:?}", e),
         }
     }
 
-    Ok(ret)
+    let result = {
+        let ret_lock = ret_arc.lock().await;
+        ret_lock.clone()
+    };
+    Ok(result)
 }

@@ -11,11 +11,13 @@ use walkdir::{DirEntry, WalkDir};
 async fn process_zip_file(full_path: String) {
     println!("[async process_zip_file]({full_path}) entered");
 
+    let time = std::time::Instant::now();
     match zip::unzip(full_path.clone()).await {
         Ok((map, temp_path_str, dest_file)) => {
             println!(
-                "[async process_zip_file]({full_path}) unzip {} Result",
-                Chalk::new().bold().string(&full_path)
+                "[async process_zip_file]({full_path}) unzip {} cost {:.2} s",
+                Chalk::new().bold().string(&full_path),
+                time.elapsed().as_millis() as f64 / 1000.0
             );
 
             for (k, v) in &map {
