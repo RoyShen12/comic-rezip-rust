@@ -1,3 +1,4 @@
+use async_zip::Compression;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, Write};
 use std::path::Path;
@@ -54,12 +55,13 @@ pub async fn zip_dir(
 }
 
 pub async fn unzip(path: String) -> Result<(HashMap<String, u32>, String, String), MyError> {
-    let reader = std::fs::File::open(&path)?;
+    let reader = File::open(&path).await?;
 
     let tmp_dir = tempfile::tempdir()?;
     println!("make tmp_dir {:?}", tmp_dir.path());
 
-    let ret = unzip_inner(reader, tmp_dir.path()).await?;
+    let ret = unzip_inner_async(reader, tmp_dir.path()).await?;
+    // unzip_inner(reader, tmp_dir.path()).await?;
 
     let temp_path_str = tmp_dir
         .into_path()
@@ -115,6 +117,47 @@ where
     Ok(())
 }
 
+async fn zip_dir_inner_async(
+    it: &mut dyn Iterator<Item = DirEntry>,
+    prefix: &str,
+    mut file: File,
+    method: Compression,
+) -> Result<(), MyError> {
+    use async_zip::tokio::write::ZipFileWriter;
+
+    let mut writer = ZipFileWriter::with_tokio(&mut file);
+
+    // for entry in it {
+    //     let path = entry.path();
+    //     let name = path
+    //         .strip_prefix(Path::new(prefix))
+    //         .ok()
+    //         .ok_or(CustomError::new(&format!(
+    //             "strip_prefix path {prefix} failed"
+    //         )))?;
+
+    //     // Write file or directory explicitly
+    //     // Some unzip tools unzip files with directory paths correctly, some do not!
+    //     if path.is_file() {
+    //         zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+    //         let mut f = std::fs::File::open(path)?;
+
+    //         let mut buffer = Vec::new();
+    //         f.read_to_end(&mut buffer)?;
+    //         zip.write_all(&buffer)?;
+    //         buffer.clear();
+    //     } else if !name.as_os_str().is_empty() {
+    //         // Only if not root! Avoids path spec / warning
+    //         // and map name conversion failed error on unzip
+    //         zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+    //     }
+    // }
+
+    writer.close().await?;
+
+    Ok(())
+}
+
 async fn unzip_inner(
     reader: std::fs::File,
     out_dir: &Path,
@@ -163,14 +206,14 @@ async fn unzip_inner(
 
             // create file fd
             let mut out_file = std::fs::File::create(&out_path)?;
-            let time_other = time_other.elapsed().as_micros();
+            let time_other = time_other.elapsed().as_nanos() as f64 / 1000.0;
             let time = std::time::Instant::now();
             io::copy(&mut file, &mut out_file)?;
             println!(
                 "[unzip_inner] copy {:?} -> {:?} ({:.2} ms unzip & I/O, {:.2} μs other)",
                 decoded_entry_name,
                 out_path,
-                time.elapsed().as_millis(),
+                time.elapsed().as_micros() as f64 / 1000.0,
                 time_other
             );
         } else {
@@ -183,58 +226,61 @@ async fn unzip_inner(
     Ok(ret)
 }
 
-// async fn unzip_inner_async(archive: File, out_dir: &Path) -> Result<(), MyError> {
-//     use async_zip::tokio::read::seek::ZipFileReader;
-//     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-//
-//     let archive = archive.compat();
-//     let mut reader = ZipFileReader::new(archive).await?;
+async fn unzip_inner_async(archive: File, out_dir: &Path) -> Result<HashMap<String, u32>, MyError> {
+    use async_zip::tokio::read::seek::ZipFileReader;
+    use tokio::fs::OpenOptions;
+    use tokio_util::compat::TokioAsyncWriteCompatExt;
 
-//     for index in 0..reader.file().entries().len() {
-//         let entry = reader
-//             .file()
-//             .entries()
-//             .get(index)
-//             .ok_or(MyError::Custom(CustomError::new(&format!(
-//                 "async zip get index {index} failed"
-//             ))))?;
+    let mut ret: HashMap<String, u32> = HashMap::new();
 
-//         let filename = entry.entry().filename();
-//         validate_file_name(filename);
-//         let path = out_dir.join(filename);
+    // let archive = archive.compat();
+    let mut zip = ZipFileReader::with_tokio(archive).await?;
 
-//         // If the filename of the entry ends with '/', it is treated as a directory.
-//         // This is implemented by previous versions of this crate and the Python Standard Library.
-//         // https://docs.rs/async_zip/0.0.8/src/async_zip/read/mod.rs.html#63-65
-//         // https://github.com/python/cpython/blob/820ef62833bd2d84a141adedd9a05998595d6b6d/Lib/zipfile.py#L528
-//         let entry_is_dir = entry.entry().dir();
+    for index in 0..zip.file().entries().len() {
+        tokio::spawn(async {});
+        let entry = zip
+            .file()
+            .entries()
+            .get(index)
+            .ok_or(MyError::Custom(CustomError::new(&format!(
+                "async zip get index {index} failed"
+            ))))?;
 
-//         // let mut entry_reader = reader.reader_without_entry(index).await?;
+        let filename = entry.entry().filename().as_bytes();
+        let decoded_entry_name = helper::decode_zip_filename(filename)?;
 
-//         if entry_is_dir {
-//             // The directory may have been created if iteration is out of order.
-//             if !path.exists() {
-//                 fs::create_dir_all(&path).await?;
-//             }
-//         } else {
-//             // Creates parent directories. They may not exist if iteration is out of order
-//             // or the archive does not contain directory entries.
-//             let parent = path
-//                 .parent()
-//                 .expect("A file entry should have parent directories");
-//             if !parent.is_dir() {
-//                 fs::create_dir_all(parent).await?;
-//             }
-//             let writer = OpenOptions::new()
-//                 .write(true)
-//                 .create_new(true)
-//                 .open(&path)
-//                 .await?;
-//             futures_util::io::copy(&mut entry_reader, &mut writer.compat_write()).await?;
+        helper::validate_file_name(&decoded_entry_name)?;
+        let path = out_dir.join(&decoded_entry_name);
 
-//             // Closes the file and manipulates its metadata here if you wish to preserve its metadata from the archive.
-//         }
-//     }
+        let mut entry_reader = zip.reader_with_entry(index).await?;
 
-//     Ok(())
-// }
+        if decoded_entry_name.ends_with('/') {
+            // The directory may have been created if iteration is out of order.
+            if !path.exists() {
+                fs::create_dir_all(&path).await?;
+            }
+        } else {
+            // statistic file ext name
+            let name_clone = String::from(&decoded_entry_name);
+            *ret.entry(helper::get_file_ext_or_itself(&name_clone).to_string())
+                .or_insert(0) += 1u32;
+
+            // Creates parent directories. They may not exist if iteration is out of order
+            // or the archive does not contain directory entries.
+            let parent = path
+                .parent()
+                .expect("A file entry should have parent directories");
+            if !parent.is_dir() {
+                fs::create_dir_all(parent).await?;
+            }
+            let writer = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .await?;
+            futures_util::io::copy(&mut entry_reader, &mut writer.compat_write()).await?;
+        }
+    }
+
+    Ok(ret)
+}
