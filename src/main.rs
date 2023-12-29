@@ -8,11 +8,11 @@ use std::path::Path;
 use tokio::fs::{self};
 use walkdir::{DirEntry, WalkDir};
 
-async fn process_zip_file(full_path: String) {
+async fn process_zip_file(full_path: String, out_path: String) {
     println!("[async process_zip_file]({full_path}) entered");
 
     let time = std::time::Instant::now();
-    match zip::unzip(full_path.clone()).await {
+    match zip::unzip(full_path.clone(), out_path.clone()).await {
         Ok((map, temp_path_str, dest_file)) => {
             println!(
                 "[async process_zip_file]({full_path}) unzip {} cost {:.2} s",
@@ -143,7 +143,7 @@ async fn process_zip_file(full_path: String) {
 
 // scan_dir eat all errors
 // let it panic
-fn scan_dir(path: &str) {
+fn scan_dir<'a>(path: &'a str, out_path: &'a str) {
     let mut handles = vec![];
     for (path, file_type) in WalkDir::new(path)
         .into_iter()
@@ -152,12 +152,13 @@ fn scan_dir(path: &str) {
     {
         if let Some(full_path) = path.to_str() {
             let full_path = full_path.to_string();
+            let out_path = out_path.to_string();
 
             if file_type.is_file() && full_path.ends_with(".zip") {
                 handles.push(std::thread::spawn(|| {
                     if let Ok(rt) = tokio::runtime::Runtime::new() {
                         let local_set = tokio::task::LocalSet::new();
-                        local_set.spawn_local(process_zip_file(full_path));
+                        local_set.spawn_local(process_zip_file(full_path, out_path));
                         rt.handle().block_on(async { local_set.await });
                     }
                 }));
@@ -180,7 +181,15 @@ fn main() {
     let time = std::time::Instant::now();
     let args: Vec<String> = env::args().collect();
     // println!("{args:?}");
-    let _ = scan_dir(&args[1]);
+    let _ = scan_dir(&args[1], &args[2]);
+    let output_path = Path::new(&args[2]);
+    if !output_path.exists() {
+        match std::fs::create_dir_all(output_path) {
+            Ok(_) => println!("auto create output dir {:}", &args[2]),
+            Err(e) => eprint!("{:?}", e),
+        }
+    }
+
     println!(
         "{:.2} sec main fn",
         time.elapsed().as_millis() as f64 / 1000.0

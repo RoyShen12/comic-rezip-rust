@@ -1,4 +1,5 @@
 use async_zip::Compression;
+use chalk_rs::Chalk;
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, Write};
 use std::path::Path;
@@ -56,7 +57,10 @@ pub async fn zip_dir(
     Ok(())
 }
 
-pub async fn unzip(path: String) -> Result<(HashMap<String, u32>, String, String), MyError> {
+pub async fn unzip(
+    path: String,
+    out_path: String,
+) -> Result<(HashMap<String, u32>, String, String), MyError> {
     let reader = File::open(&path).await?;
 
     let tmp_dir = tempfile::tempdir()?;
@@ -71,7 +75,11 @@ pub async fn unzip(path: String) -> Result<(HashMap<String, u32>, String, String
         .to_string_lossy()
         .into_owned();
 
-    Ok((ret, temp_path_str, helper::get_out_zip_path(&path)?))
+    Ok((
+        ret,
+        temp_path_str,
+        helper::get_out_zip_path(&path, &out_path)?,
+    ))
 }
 
 fn zip_dir_inner<T>(
@@ -129,31 +137,43 @@ async fn zip_dir_inner_async(
 
     let mut writer = ZipFileWriter::with_tokio(&mut file);
 
-    // for entry in it {
-    //     let path = entry.path();
-    //     let name = path
-    //         .strip_prefix(Path::new(prefix))
-    //         .ok()
-    //         .ok_or(CustomError::new(&format!(
-    //             "strip_prefix path {prefix} failed"
-    //         )))?;
+    let mut handles = vec![];
 
-    //     // Write file or directory explicitly
-    //     // Some unzip tools unzip files with directory paths correctly, some do not!
-    //     if path.is_file() {
-    //         zip.start_file(name.as_os_str().to_string_lossy(), options)?;
-    //         let mut f = std::fs::File::open(path)?;
+    for entry in it {
+        let path = entry.path().to_owned();
+        let name = path
+            .strip_prefix(Path::new(prefix))
+            .ok()
+            .ok_or(CustomError::new(&format!(
+                "strip_prefix path {prefix} failed"
+            )))?
+            .to_owned();
 
-    //         let mut buffer = Vec::new();
-    //         f.read_to_end(&mut buffer)?;
-    //         zip.write_all(&buffer)?;
-    //         buffer.clear();
-    //     } else if !name.as_os_str().is_empty() {
-    //         // Only if not root! Avoids path spec / warning
-    //         // and map name conversion failed error on unzip
-    //         zip.start_file(name.as_os_str().to_string_lossy(), options)?;
-    //     }
-    // }
+        handles.push(tokio::spawn(async {
+            // Write file or directory explicitly
+            // Some unzip tools unzip files with directory paths correctly, some do not!
+            // if path.is_file() {
+            //     zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+            //     let mut f = std::fs::File::open(path)?;
+
+            //     let mut buffer = Vec::new();
+            //     f.read_to_end(&mut buffer)?;
+            //     zip.write_all(&buffer)?;
+            //     buffer.clear();
+            // } else if !name.as_os_str().is_empty() {
+            //     // Only if not root! Avoids path spec / warning
+            //     // and map name conversion failed error on unzip
+            //     zip.start_file(name.as_os_str().to_string_lossy(), options)?;
+            // }
+        }));
+    }
+
+    for handle in handles {
+        match handle.await {
+            Ok(_) => {}
+            Err(e) => eprint!("{:?}", e),
+        }
+    }
 
     writer.close().await?;
 
@@ -235,6 +255,7 @@ async fn unzip_inner_async(archive: File, out_dir: &Path) -> Result<HashMap<Stri
 
     let ret: HashMap<String, u32> = HashMap::new();
     // let archive = archive.compat();
+    let debug_filename = format!("{:?}", archive);
     let zip = ZipFileReader::with_tokio(archive).await?;
 
     let zip_arc = Arc::new(Mutex::new(zip));
@@ -248,10 +269,17 @@ async fn unzip_inner_async(archive: File, out_dir: &Path) -> Result<HashMap<Stri
         let zip_arc = Arc::clone(&zip_arc); // 克隆
         let ret_arc = Arc::clone(&ret_arc); // 克隆
 
-        handles.push(tokio::spawn(async move {
-            let mut locked_zip_arc = zip_arc.lock().await;
+        let debug_header = "[unzip_inner_async] [tokio thread]";
+        let debug_archive = debug_filename.clone();
 
-            match locked_zip_arc
+        handles.push(tokio::spawn(async move {
+            println!(
+                "{} f:({debug_archive}) i:[{index}] {:?} entered",
+                Chalk::new().light_red().string(&debug_header),
+                out_dir
+            );
+            let mut zip_arc_guard = zip_arc.lock().await;
+            match zip_arc_guard
                 .file()
                 .entries()
                 .get(index)
@@ -259,14 +287,24 @@ async fn unzip_inner_async(archive: File, out_dir: &Path) -> Result<HashMap<Stri
                     "async zip get index {index} failed"
                 )))) {
                 Ok(entry) => {
+                    println!(
+                        "{} f:({debug_archive}) i:[{index}] {:?} zip_arc lock and into match ok",
+                        Chalk::new().light_blue().string(&debug_header),
+                        out_dir
+                    );
                     let filename = entry.entry().filename().as_bytes();
                     if let Ok(decoded_entry_name) = helper::decode_zip_filename(filename) {
                         match helper::validate_file_name(&decoded_entry_name) {
                             Ok(_) => {
                                 let path = out_dir.join(&decoded_entry_name);
 
-                                match locked_zip_arc.reader_with_entry(index).await {
+                                match zip_arc_guard.reader_with_entry(index).await {
                                     Ok(mut entry_reader) => {
+                                        println!(
+                                            "{} f:({debug_archive}) i:[{index}] {:?} file entry reader ok",
+                                            Chalk::new().light_cyan().string(&debug_header),
+                                            out_dir
+                                        );
                                         if decoded_entry_name.ends_with('/') {
                                             // The directory may have been created if iteration is out of order.
                                             if !path.exists() {
@@ -328,6 +366,13 @@ async fn unzip_inner_async(archive: File, out_dir: &Path) -> Result<HashMap<Stri
                 }
                 Err(e) => eprint!("{:?}", e),
             }
+            println!(
+                "{} f:({debug_archive}) i:[{index}] {:?} finished",
+                Chalk::new()
+                    .light_green()
+                    .string(&"[unzip_inner_async] [tokio thread]"),
+                out_dir
+            );
         }));
     }
 

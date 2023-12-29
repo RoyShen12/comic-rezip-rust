@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use crate::constant::{ASCII, FALLBACK_ENCODING, OUT_PATH, UTF8};
+use crate::constant::{ASCII, FALLBACK_ENCODING, UTF8};
 use crate::{my_error::CustomError, MyError};
 use chalk_rs::Chalk;
 use encoding::{label::encoding_from_whatwg_label, DecoderTrap};
@@ -23,10 +23,10 @@ pub fn validate_file_name(file_name: &str) -> Result<(), MyError> {
     }
 }
 
-pub fn get_out_zip_path(origin_filename: &str) -> Result<String, MyError> {
+pub fn get_out_zip_path(origin_filename: &str, output_path: &str) -> Result<String, MyError> {
     Ok(dirs_next::home_dir()
         .ok_or(CustomError::new("cannot get home_dir"))?
-        .join(Path::new(OUT_PATH))
+        .join(Path::new(&output_path))
         .join(
             Path::new(&origin_filename)
                 .file_name()
